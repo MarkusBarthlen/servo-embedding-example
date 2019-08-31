@@ -2,25 +2,27 @@ extern crate glutin;
 extern crate servo;
 
 use servo::gl;
-use glutin::GlContext;
+//use glutin::GlContext;
 use servo::BrowserId;
-use servo::compositing::compositor_thread::EventLoopWaker;
-use servo::compositing::windowing::{WindowEvent, WindowMethods};
-use servo::euclid::{Point2D, Size2D, TypedPoint2D, TypedRect, TypedScale, TypedSize2D,
-                    TypedVector2D};
+use servo::embedder_traits::EventLoopWaker;
+use servo::compositing::windowing::{WindowEvent, WindowMethods, EmbedderMethods};
+use servo::euclid::{Point2D, Size2D, Scale,
+                    Vector2D};
 use servo::ipc_channel::ipc;
-use servo::msg::constellation_msg::{Key, KeyModifiers};
-use servo::net_traits::net_error_list::NetError;
+
+use webvr_traits::WebVRMainThreadHeartbeat;
 use servo::script_traits::{LoadData, TouchEventType};
 use servo::servo_config::opts;
-use servo::servo_config::resource_files::set_resources_path;
+//use servo::servo_config::resource_files::set_resources_path;
 use servo::servo_geometry::DeviceIndependentPixel;
 use servo::servo_url::ServoUrl;
 use servo::style_traits::DevicePixel;
-use servo::style_traits::cursor::CursorKind;
+use webvr::VRServiceManager;
 use std::env;
 use std::rc::Rc;
 use std::sync::Arc;
+use servo_media::player::context::{GlApi, GlContext, NativeDisplay};
+
 
 pub struct GlutinEventLoopWaker {
     proxy: Arc<glutin::EventsLoopProxy>,
@@ -73,8 +75,8 @@ fn main() {
 
     let path = env::current_dir().unwrap().join("resources");
     let path = path.to_str().unwrap().to_string();
-    set_resources_path(Some(path));
-    opts::set_defaults(opts::default_opts());
+    //set_resources_path(Some(path));
+    //opts::set_defaults(opts::default_opts());
 
     let window = Rc::new(Window {
         glutin_window: window,
@@ -110,7 +112,7 @@ fn main() {
             } => {
                 pointer = (x, y);
                 let event =
-                    WindowEvent::MouseWindowMoveEventClass(TypedPoint2D::new(x as f32, y as f32));
+                    WindowEvent::MouseWindowMoveEventClass(DevicePoint::new(x as f32, y as f32));
                 servo.handle_events(vec![event]);
             }
 
@@ -137,7 +139,7 @@ fn main() {
                 event: glutin::WindowEvent::MouseWheel { delta, phase, .. },
                 ..
             } => {
-                let pointer = TypedPoint2D::new(pointer.0 as i32, pointer.1 as i32);
+                let pointer = DeviceIntPoint::new(pointer.0 as i32, pointer.1 as i32);
                 let (dx, dy) = match delta {
                     glutin::MouseScrollDelta::LineDelta(dx, dy) => {
                         (dx, dy * 38.0 /*line height*/)
@@ -145,7 +147,7 @@ fn main() {
                     glutin::MouseScrollDelta::PixelDelta(dx, dy) => (dx, dy),
                 };
                 let scroll_location =
-                    servo::webrender_api::ScrollLocation::Delta(TypedVector2D::new(dx, dy));
+                    servo::webrender_api::ScrollLocation::Delta(Vector2D::new(dx, dy));
                 let phase = match phase {
                     glutin::TouchPhase::Started => TouchEventType::Down,
                     glutin::TouchPhase::Moved => TouchEventType::Move,
@@ -178,102 +180,72 @@ impl WindowMethods for Window {
         self.glutin_window.swap_buffers().unwrap();
     }
 
-    fn supports_clipboard(&self) -> bool {
-        false
+    fn gl(&self) -> Rc<gl::Gl> {
+        self.gl.clone()
     }
+
+    fn set_animation_state(&self, _state: AnimationState) {
+
+    }
+
+    fn get_gl_context(&self) -> GlContext {
+        let gl_context = {
+                    use glutin::os::unix::RawHandle;
+
+                    match raw_handle {
+                        RawHandle::Egl(egl_context) => GlContext::Egl(egl_context as usize),
+                        RawHandle::Glx(glx_context) => GlContext::Glx(glx_context as usize),
+                    }
+                };
+    }
+
+    fn get_native_display(&self) -> NativeDisplay{
+        let native_display = if let Some(display) =
+                    unsafe { windowed_context.context().get_egl_display() }
+                {
+                    NativeDisplay::Egl(display as usize)
+                } else {
+                    use glutin::os::unix::WindowExt;
+
+                    if let Some(display) = windowed_context.window().get_wayland_display() {
+                        NativeDisplay::Wayland(display as usize)
+                    } else if let Some(display) = windowed_context.window().get_xlib_display() {
+                        NativeDisplay::X11(display as usize)
+                    } else {
+                        NativeDisplay::Unknown
+                    }
+                };
+        native_display?        
+    }
+    
+    fn get_gl_api(&self) -> GlApi{
+        GlApi::OpenGL3
+    }
+
+ //   fn hidpi_factor(&self) -> Scale<f32, DeviceIndependentPixel, DevicePixel> {
+ //       Scale::new(self.glutin_window.hidpi_factor())
+ //   }
+
+ //   fn screen_size(&self, _id: BrowserId) -> Size2D<u32> {
+ //       let monitor = self.glutin_window.get_current_monitor();
+ //       let (monitor_width, monitor_height) = monitor.get_dimensions();
+ //       Size2D::new(monitor_width, monitor_height)
+ //   }
+}
+
+impl EmbedderMethods for Window {
 
     fn create_event_loop_waker(&self) -> Box<EventLoopWaker> {
         self.waker.clone()
     }
 
-    fn gl(&self) -> Rc<gl::Gl> {
-        self.gl.clone()
-    }
-
-    fn hidpi_factor(&self) -> TypedScale<f32, DeviceIndependentPixel, DevicePixel> {
-        TypedScale::new(self.glutin_window.hidpi_factor())
-    }
-
-    fn framebuffer_size(&self) -> TypedSize2D<u32, DevicePixel> {
-        let (width, height) = self.glutin_window.get_inner_size().unwrap();
-        let scale_factor = self.glutin_window.hidpi_factor() as u32;
-        TypedSize2D::new(scale_factor * width, scale_factor * height)
-    }
-
-    fn window_rect(&self) -> TypedRect<u32, DevicePixel> {
-        TypedRect::new(TypedPoint2D::new(0, 0), self.framebuffer_size())
-    }
-
-    fn size(&self) -> TypedSize2D<f32, DeviceIndependentPixel> {
-        let (width, height) = self.glutin_window.get_inner_size().unwrap();
-        TypedSize2D::new(width as f32, height as f32)
-    }
-
-    fn client_window(&self, _id: BrowserId) -> (Size2D<u32>, Point2D<i32>) {
-        let (width, height) = self.glutin_window.get_inner_size().unwrap();
-        let (x, y) = self.glutin_window.get_position().unwrap();
-        (Size2D::new(width, height), Point2D::new(x as i32, y as i32))
-    }
-
-    fn set_inner_size(&self, _id: BrowserId, _size: Size2D<u32>) {}
-
-    fn set_position(&self, _id: BrowserId, _point: Point2D<i32>) {}
-
-    fn set_fullscreen_state(&self, _id: BrowserId, _state: bool) {}
-
-    fn set_page_title(&self, _id: BrowserId, title: Option<String>) {
-        self.glutin_window.set_title(match title {
-            Some(ref title) => title,
-            None => "",
-        });
-    }
-
-    fn status(&self, _id: BrowserId, _status: Option<String>) {}
-
-    fn allow_navigation(&self, _id: BrowserId, _url: ServoUrl, chan: ipc::IpcSender<bool>) {
-        chan.send(true).ok();
-    }
-
-    fn load_start(&self, _id: BrowserId) {}
-
-    fn load_end(&self, _id: BrowserId) {}
-
-    fn load_error(&self, _id: BrowserId, _: NetError, _url: String) {}
-
-    fn head_parsed(&self, _id: BrowserId) {}
-
-    fn history_changed(&self, _id: BrowserId, _entries: Vec<LoadData>, _current: usize) {}
-
-    fn set_cursor(&self, cursor: CursorKind) {
-        let cursor = match cursor {
-            CursorKind::Pointer => glutin::MouseCursor::Hand,
-            _ => glutin::MouseCursor::Default,
-        };
-        self.glutin_window.set_cursor(cursor);
-    }
-
-    fn set_favicon(&self, _id: BrowserId, _url: ServoUrl) {}
-
-    fn handle_key(
-        &self,
-        _id: Option<BrowserId>,
-        _ch: Option<char>,
-        _key: Key,
-        _mods: KeyModifiers,
+    fn register_vr_services(
+        &mut self,
+        _: &mut VRServiceManager,
+        _: &mut Vec<Box<dyn WebVRMainThreadHeartbeat>>,
     ) {
     }
 
-    fn handle_panic(&self, _id: BrowserId, _reason: String, _backtrace: Option<String>) {}
-
-    fn screen_avail_size(&self, _id: BrowserId) -> Size2D<u32> {
-        let monitor = self.glutin_window.get_current_monitor();
-        let (monitor_width, monitor_height) = monitor.get_dimensions();
-        Size2D::new(monitor_width, monitor_height)
-    }
-
-    fn screen_size(&self, _id: BrowserId) -> Size2D<u32> {
-        let monitor = self.glutin_window.get_current_monitor();
-        let (monitor_width, monitor_height) = monitor.get_dimensions();
-        Size2D::new(monitor_width, monitor_height)
-    }
+        /// Register services with a WebXR Registry.
+    fn register_webxr(&mut self, _: &mut webxr_api::MainThreadRegistry) {}
 }

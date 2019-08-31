@@ -4,5 +4,6 @@ version = "0.1.0"
 authors = ["Paul Rouget <me@paulrouget.com>"]
 
 [dependencies]
-libservo = { git = "https://github.com/servo/servo", rev = "17d7a12" }
+libservo = { git = "https://github.com/servo/servo", rev = "92161ecfbcb81352ed528c4fc02b30cbb9a3d0f3", features = ["canvas2d-azure", "layout-2020"] }
 glutin = "0.13.1"
+
